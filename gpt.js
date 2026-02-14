@@ -24,11 +24,13 @@ export async function getGPTResponse(conversationHistory) {
             { role: "system", content: systemPrompt },
             ...conversationHistory
         ]
+    }).catch(err => {
+        console.log("Error getting GPT reply");
+        console.log(err);
+        return null;
     });
 
-    const assistantText = response.output_text;
-
-    return assistantText;
+    return response?.output_text || "Sorry I was not able to process that";
 }
 
 
@@ -55,7 +57,11 @@ export async function classifyEscalation(conversationHistory) {
         text: {
             format: zodTextFormat(EsclataionDecision, "escalation_decision"),
         }
+    }).catch(err => {
+        console.log("Escalation classification error");
+        console.log(err);
+        return { escalate: false, confidence: 0 };
     });
 
-    return JSON.parse(response.output_text);
+    return JSON.parse(response?.output_text);
 }

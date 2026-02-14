@@ -28,6 +28,7 @@ const conversations = {};
 
 app.post("/messages", async function (req, res) {
   if (req.headers["x-api-key"] !== process.env.SUNCO_WEBHOOK_SHARED_SECRET) {
+    console.log("Received unauthenticated request");
     return res.sendStatus(401);
   } else {
     res.sendStatus(200);
@@ -40,28 +41,26 @@ app.post("/messages", async function (req, res) {
     const { conversation, message } = event.payload;
 
     if (message.author.type === "user") {
+      console.log("New message received");
       const history = conversations[conversation.id] || [];
       history.push({ role: "user", content: message.content.text });
 
       const decision = await classifyEscalation(history);
       if (decision.escalate && decision.confidence > 0.75) {
         await passControlToZendesk(appId, conversation.id);
-        return res.sendStatus(200);
+        return;
       }
 
       const typingEvent = { "author": { "type": "business" }, "type": "typing:start" };
-      activityAPI.postActivity(appId, conversation.id, typingEvent);
+      await activityAPI.postActivity(appId, conversation.id, typingEvent).catch(err => {
+        console.log("Error sending typing activity");
+        console.log(err);
+      });
 
       const gptReply = await getGPTResponse(history);
-      if (typeof gptReply === "string") {
-        history.push({ role: "assistant", content: gptReply });
-        conversations[conversation.id] = history;
-
-        await sendMessage(appId, conversation.id, gptReply);
-      }
-      else {
-        console.log("gptReply", gptReply);
-      }
+      history.push({ role: "assistant", content: gptReply });
+      conversations[conversation.id] = history;
+      await sendMessage(appId, conversation.id, gptReply);
     }
   }
 
@@ -72,19 +71,29 @@ async function sendMessage(appId, conversationId, text) {
   const messagePost = new SunshineConversationsClient.MessagePost();
   messagePost.setAuthor({ type: "business" });
   messagePost.setContent({ type: "text", text });
-  const response = await messagesAPI.postMessage(
+
+  await messagesAPI.postMessage(
     appId,
     conversationId,
     messagePost
-  );
-  console.log("Message sent successfully");
+  ).catch(err => {
+    console.log("Error sending reply to SunCo");
+    console.log(err);
+  });
 }
 
 async function passControlToZendesk(appId, conversationId) {
-  await sendMessage(appId, conversationId, "Sorry that I was not able to help. I am transferring you to a human agent now.")
   const passControlBody = new SunshineConversationsClient.PassControlBody("zd-agentWorkspace");
-  const { data } = await switchboardAPI.passControl(appId, conversationId, passControlBody);
-  console.log("Pass control data:", data);
+  await switchboardAPI.passControl(appId, conversationId, passControlBody).then(async _ => {
+    const escalationMessage = "Sorry that I was not able to help. I am transferring you to a human agent now.";
+    return sendMessage(appId, conversationId, escalationMessage);
+  }).catch(err => {
+    console.log("Error passing control to zd-agentWorkspace");
+    console.log(err);
+
+    const escalationFailedMessage = "Sorry I am unable to transfer you to a human right now.";
+    return sendMessage(appId, conversationId, escalationFailedMessage);
+  });
 }
 
 app.listen(PORT, "0.0.0.0", () => {
